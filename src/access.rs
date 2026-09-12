@@ -13,7 +13,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use crate::address::{DeviceEntry, DeviceTarget};
-use crate::auth::session::read_session_cookie;
+use crate::auth::session::read_session_cookies;
 use crate::auth::session::resolve_session;
 use crate::db::{now_millis, DeviceRecord, UserRecord};
 use crate::state::RelayState;
@@ -70,17 +70,24 @@ pub fn guard(
 /// A lookup failure is treated as "not signed in": the request is refused either way, and letting
 /// a database hiccup open a restricted device would be the wrong way to fail.
 fn signed_in_user(state: &RelayState, headers: &HeaderMap) -> Option<UserRecord> {
-    let token = headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(read_session_cookie)?;
-    match resolve_session(&state.database, token, now_millis()) {
-        Ok(user) => user,
-        Err(error) => {
-            tracing::error!(%error, "校验控制台会话失败");
-            None
+    // `get_all`, not `get`: over HTTP/2 the cookies arrive as one field each.
+    let fields = headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok());
+    let now = now_millis();
+    // More than one value can carry the same name, so each is tried until one resolves.
+    for token in read_session_cookies(fields) {
+        match resolve_session(&state.database, token, now) {
+            Ok(Some(user)) => return Some(user),
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::error!(%error, "校验控制台会话失败");
+                return None;
+            }
         }
     }
+    None
 }
 
 /// `/console/login?next=<this request>`, so signing in lands back on the device that was asked for.

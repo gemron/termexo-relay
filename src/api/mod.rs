@@ -23,7 +23,7 @@ use axum::routing::{delete, get, patch, post};
 use axum::Router;
 use termexo_relay_protocol::tunnel::{ENROLL_PATH, HEALTH_PATH};
 
-use crate::auth::session::{has_csrf_marker, read_session_cookie, resolve_session, CSRF_HEADER};
+use crate::auth::session::{has_csrf_marker, read_session_cookies, resolve_session, CSRF_HEADER};
 use crate::db::{now_millis, UserRecord};
 use crate::forwarded::{self, ClientContext};
 use crate::state::SharedState;
@@ -139,16 +139,22 @@ impl FromRequestParts<SharedState> for SessionUser {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &SharedState) -> ApiResult<Self> {
-        let token = parts
+        // `get_all`, not `get`: over HTTP/2 the cookies arrive as one field each.
+        let fields = parts
             .headers
-            .get(header::COOKIE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(read_session_cookie)
-            .ok_or_else(|| ApiError::unauthorized(NOT_LOGGED_IN))?
-            .to_string();
-        let user = resolve_session(&state.database, &token, now_millis())?
-            .ok_or_else(|| ApiError::unauthorized(NOT_LOGGED_IN))?;
-        Ok(Self { user, token })
+            .get_all(header::COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok());
+        let now = now_millis();
+        for token in read_session_cookies(fields) {
+            if let Some(user) = resolve_session(&state.database, token, now)? {
+                return Ok(Self {
+                    user,
+                    token: token.to_string(),
+                });
+            }
+        }
+        Err(ApiError::unauthorized(NOT_LOGGED_IN))
     }
 }
 

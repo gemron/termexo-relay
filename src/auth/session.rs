@@ -111,11 +111,26 @@ pub fn cleared_session_cookie(secure: bool) -> String {
     )
 }
 
-/// Picks the session token out of a `Cookie` header.
-pub fn read_session_cookie(header: &str) -> Option<&str> {
-    header.split(';').find_map(|entry| {
-        let (name, value) = entry.trim().split_once('=')?;
-        (name == SESSION_COOKIE_NAME && !value.is_empty()).then_some(value)
+/// Every session token carried by the `Cookie` header fields of one request.
+///
+/// **There can be more than one header field.** Over HTTP/2 — which is what a browser negotiates
+/// as soon as the relay terminates TLS — a client may split the cookies into one field per cookie,
+/// and Chrome does exactly that. Reading only the first field finds whichever cookie happens to
+/// sort first for that host: on a developer's machine `localhost` collects cookies from unrelated
+/// tools, so the session cookie sat in the fourth field and the relay answered 401 to a browser
+/// that had just logged in successfully. Over HTTP/1.1 everything arrives in one field, which is
+/// why plain http and `curl` never showed it.
+///
+/// More than one value can also carry the same name, so every candidate is returned and the caller
+/// tries them all rather than trusting the order.
+pub fn read_session_cookies<'a>(
+    fields: impl IntoIterator<Item = &'a str>,
+) -> impl Iterator<Item = &'a str> {
+    fields.into_iter().flat_map(|field| {
+        field.split(';').filter_map(|entry| {
+            let (name, value) = entry.trim().split_once('=')?;
+            (name == SESSION_COOKIE_NAME && !value.is_empty()).then_some(value)
+        })
     })
 }
 
@@ -231,15 +246,42 @@ mod tests {
 
     #[test]
     fn the_session_cookie_is_picked_out_of_a_crowded_header() {
+        let header = format!("other=1; {SESSION_COOKIE_NAME}=abc; last=2");
         assert_eq!(
-            read_session_cookie(&format!("other=1; {SESSION_COOKIE_NAME}=abc; last=2")),
-            Some("abc")
+            read_session_cookies([header.as_str()]).collect::<Vec<_>>(),
+            ["abc"]
         );
-        assert_eq!(read_session_cookie("other=1"), None);
+        assert_eq!(read_session_cookies(["other=1"]).count(), 0);
+        let empty = format!("{SESSION_COOKIE_NAME}=");
         assert_eq!(
-            read_session_cookie(&format!("{SESSION_COOKIE_NAME}=")),
-            None,
+            read_session_cookies([empty.as_str()]).count(),
+            0,
             "an empty value is not a session"
+        );
+    }
+
+    /// More than one value can carry the same name, so the caller gets every candidate rather
+    /// than having to trust the order.
+    #[test]
+    fn every_session_cookie_in_one_field_is_offered() {
+        let header = format!("{SESSION_COOKIE_NAME}=stale; other=1; {SESSION_COOKIE_NAME}=fresh");
+
+        assert_eq!(
+            read_session_cookies([header.as_str()]).collect::<Vec<_>>(),
+            ["stale", "fresh"]
+        );
+    }
+
+    /// The regression this function exists for: over HTTP/2 Chrome sends one `cookie` field per
+    /// cookie, and the session is not in the first of them.
+    #[test]
+    fn a_session_split_across_http2_cookie_fields_is_still_found() {
+        let session = format!("{SESSION_COOKIE_NAME}=live");
+
+        assert_eq!(
+            read_session_cookies(["unrelated=1", "another=2", session.as_str()])
+                .collect::<Vec<_>>(),
+            ["live"]
         );
     }
 
