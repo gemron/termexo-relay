@@ -1,0 +1,6 @@
+target/
+
+# The relay's own data directory when it is run straight from a checkout.
+relay-data/
+
+# The console workspace ignores its own build output and node_modules.

@@ -1,0 +1,3 @@
+# The sources came from a Windows checkout with mixed line endings, and Prettier checks for LF.
+# Normalising on commit keeps `prettier --check` honest whichever platform the working copy is on.
+* text=auto eol=lf

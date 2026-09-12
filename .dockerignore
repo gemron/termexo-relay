@@ -1,0 +1,11 @@
+# The patch in here points at a sibling Termexo checkout that does not exist in the build context;
+# without it the image resolves the protocol crate from the git revision Cargo.lock pins.
+.cargo/
+
+target/
+relay-data/
+console/node_modules/
+console/dist/
+console/.angular/
+console/out-tsc/
+.git/

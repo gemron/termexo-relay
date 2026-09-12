@@ -1,0 +1,9 @@
+# Compiled output
+/dist
+/out-tsc
+
+# Node
+/node_modules
+
+# Angular build cache
+/.angular
