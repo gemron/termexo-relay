@@ -1,6 +1,6 @@
 {
   "name": "termexo-relay-console",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "private": true,
   "packageManager": "npm@11.14.1",
   "scripts": {
