@@ -1,15 +1,11 @@
 # Builds the release binaries for every supported operating system and CPU architecture, then
 # publishes them on the GitHub release for the tag.
 #
-# PREREQUISITE — this workflow cannot succeed yet. Cargo.toml resolves `termexo-relay-protocol` from
-# `https://github.com/gemron/Termexo.git` branch `main`, and that branch does not carry the crate
-# yet (the split still lives on Termexo's `feature/relay-service`). Every build job fails at
-# dependency resolution until Termexo publishes the crate on `main`.
-#
-# Lockfile — the committed Cargo.lock records `termexo-relay-protocol` as a path dependency, an
-# artifact of .cargo/config.toml being in place when it was written. `--locked` refuses the
-# resolution change that removing the patch causes, so once the crate is on Termexo's `main` the
-# lockfile has to be regenerated without the patch and committed.
+# `termexo-relay-protocol` is resolved from a pinned revision of the Termexo repository, so nothing
+# here needs a checkout of it. `.cargo/config.toml` — the opt-in override onto a sibling Termexo
+# checkout — is deliberately not committed: cargo fails when its `paths` entry does not resolve, and
+# it must never reach a runner. The `rm -f` below is belt-and-braces for a hand-triggered run on a
+# working tree that has one.
 #
 # Every target is built on a runner of its own architecture. Cross-compiling would drag in a
 # cross-linker and a cross C toolchain for aws-lc-sys and the bundled SQLite, both of which compile

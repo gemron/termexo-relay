@@ -361,13 +361,10 @@ cargo 在 `paths` 指向的目录不存在时会直接报错，所以全新克�
 都不交叉编译：`aws-lc-rs` 与 bundled SQLite 都要编 C，交叉工具链比多开一台构建机麻烦得多。控制台
 只构建一次，再作为 artifact 分发给各个构建机，因此每份产物里的控制台是同一份。
 
-两个前提：
-
-* 各工作流在跑 cargo 之前会删掉 `.cargo/config.toml`（Docker 镜像靠 `.dockerignore` 排除它），
-  因为构建机上没有相邻的 Termexo 检出，而 cargo 遇到指向不存在路径的 patch 会直接报错；
-* `--locked` 要求 `Cargo.lock` 记录的是**git 来源**的 `termexo-relay-protocol`。当前提交里的
-  `Cargo.lock` 是带着那条 patch 生成的，把它记成了路径依赖，所以协议 crate 推到 Termexo 的 `main`
-  之后，需要在没有 patch 的情况下重新生成并提交一次 `Cargo.lock`。
+协议 crate 按钉定的 commit 从 Termexo 仓库解析，构建机上不需要它的检出。本地覆盖
+`.cargo/config.toml` 不提交，正是因为 cargo 遇到指向不存在路径的 `paths` 会直接报错——它绝不能出现
+在构建机上；工作流里那句 `rm -f` 只是为手动触发时工作区恰好有一份的情况兜底，Docker 则靠
+`.dockerignore` 排除。
 
 ## 已知限制
 

@@ -1,9 +1,8 @@
 # Publishes the multi-architecture container image to GitHub Container Registry.
 #
-# PREREQUISITE — like release.yml, this cannot succeed until `termexo-relay-protocol` exists on
-# Termexo's `main` branch, which Cargo.toml resolves the crate from, and until Cargo.lock has been
-# regenerated without the .cargo/config.toml patch so that `--locked` inside the Dockerfile accepts
-# the git source.
+# `termexo-relay-protocol` is resolved from a pinned revision of the Termexo repository, and
+# `.dockerignore` keeps a local `.cargo/config.toml` override out of the build context, so
+# `--locked` inside the Dockerfile sees the same git source the lockfile records.
 #
 # Each architecture is built on a runner of that architecture and pushed by digest; a final job
 # joins the digests into one manifest list. The obvious alternative — one buildx job with

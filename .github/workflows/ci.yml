@@ -1,15 +1,11 @@
 # Pull-request and branch checks. Lighter than release.yml: one representative runner per operating
 # system rather than the full publish matrix.
 #
-# PREREQUISITE — this workflow cannot pass yet. Cargo.toml resolves `termexo-relay-protocol` from
-# `https://github.com/gemron/Termexo.git` branch `main`, and that branch does not carry the crate
-# yet (the split still lives on Termexo's `feature/relay-service`). Every Rust job here fails at
-# dependency resolution until Termexo publishes the crate on `main` and Cargo.lock is regenerated
-# with the resulting git source (see "Lockfile" below).
-#
-# Lockfile: the committed Cargo.lock records `termexo-relay-protocol` as a path dependency, because
-# it was produced with .cargo/config.toml in place. Once the crate is on Termexo's `main`, rebuild
-# the lockfile without that patch and commit it, otherwise `--locked` rejects the resolution change.
+# `termexo-relay-protocol` is resolved from a pinned revision of the Termexo repository, so nothing
+# here needs a checkout of it. `.cargo/config.toml` — the opt-in override onto a sibling Termexo
+# checkout — is deliberately not committed: cargo fails when its `paths` entry does not resolve, and
+# it must never reach a runner. The `rm -f` below is belt-and-braces for a hand-triggered run on a
+# working tree that has one.
 
 name: CI
 
