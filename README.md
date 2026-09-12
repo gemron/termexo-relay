@@ -339,9 +339,16 @@ npm --prefix console run build      # 产物 console/dist/relay-console/browser
 
 ### 与 Termexo 一起开发
 
-`Cargo.toml` 把 `termexo-relay-protocol` 声明为 Termexo 仓库的 git 依赖。`.cargo/config.toml` 里有
-一条 patch，让**相邻目录**的 Termexo 检出优先：两个仓库并排放时，改完协议不必先推送就能在这里编译。
-只想按 git 版本构建（Docker 与全新克隆就是如此）就删掉那个文件。
+`Cargo.toml` 把 `termexo-relay-protocol` 声明为 Termexo 仓库的 git 依赖，并**钉在具体 commit 上**
+——分支合并后会被删除，commit 不会。
+
+把 `.cargo/config.toml.example` 复制成 `.cargo/config.toml`，就会改用**相邻目录**的 Termexo 检出：
+两个仓库并排放时，改完协议不必先推送、也不必重新钉 commit 就能在这里编译。这个文件**不提交**——
+cargo 在 `paths` 指向的目录不存在时会直接报错，所以全新克隆、CI 和 Docker 构建都不能看到它。
+
+它用的是 `paths` 而不是 `[patch]`，这一点是刻意的：`[patch]` 会把 `Cargo.lock` 里该 crate 的来源
+改写成本地路径，于是每次本地构建都在悄悄解除版本钉定，而把那样的 lock 提交上去会让所有没有这个
+覆盖的地方（CI、Docker、别人的克隆）全部构建失败。`paths` 覆盖不动 lock。
 
 ### 持续集成与发布
 

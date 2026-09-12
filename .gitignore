@@ -4,3 +4,6 @@ target/
 relay-data/
 
 # The console workspace ignores its own build output and node_modules.
+
+# Opt-in local override; copy .cargo/config.toml.example to use it.
+.cargo/config.toml

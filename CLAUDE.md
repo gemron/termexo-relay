@@ -53,10 +53,18 @@ lockout table and the reconnect ladder — is **owned by the Termexo repository*
 desktop app compiles the same crate and builds entirely from its own checkout. `Cargo.toml`
 declares it as a git dependency.
 
-`.cargo/config.toml` patches that dependency to `../Termexo/crates/termexo-relay-protocol`, so a
-Termexo checkout sitting next to this one wins. That is what makes it possible to change the
-protocol and compile both sides without pushing in between. Delete the file to build purely from
-the pinned git revision; `.dockerignore` already keeps it out of the image.
+The revision is pinned, not a branch: a branch is deleted once it merges, a commit is not.
+
+Copy `.cargo/config.toml.example` to `.cargo/config.toml` to build against a Termexo checkout
+sitting next to this one, which is what makes it possible to change the protocol and compile both
+sides without pushing and re-pinning in between. It is **not committed**: cargo fails outright when
+a `paths` entry does not resolve, so a fresh clone, CI and the Docker build must not find one.
+
+It uses `paths` rather than `[patch]` for a specific reason. A patch rewrites the crate's source in
+`Cargo.lock` to a local path, so every local build silently un-pins the dependency; committing that
+lock breaks `--locked` everywhere the override is absent — which is everywhere that matters. A path
+override leaves the lock alone. `ci.yml` builds with `--locked` and no override, so a lock that ever
+does get committed in the path form fails there rather than in someone's release.
 
 **A protocol change touches two repositories.** Change the crate in Termexo, verify both sides
 there and here, and keep the design note `docs/architecture/relay-service.md` (also in Termexo)

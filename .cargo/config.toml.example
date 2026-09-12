@@ -1,0 +1,15 @@
+# Build against a Termexo checkout sitting next to this one.
+#
+# `termexo-relay-protocol` is declared in Cargo.toml as a git dependency on the Termexo repository,
+# which owns it — the desktop app compiles the same crate and builds entirely from its own checkout.
+# Developing the two together would otherwise mean pushing Termexo and re-pinning the revision after
+# every protocol change.
+#
+# Copy this file to `.cargo/config.toml` to opt in. It is deliberately not committed: a checkout
+# without it — a fresh clone, CI, the Docker build — resolves the crate from the pinned revision,
+# which is the only thing `--locked` accepts.
+#
+# `paths` rather than `[patch]` on purpose: a path override does not touch Cargo.lock, whereas a
+# patch rewrites the crate's source to a local path there, and committing that lock breaks every
+# build that does not have this file.
+paths = ["../Termexo/crates/termexo-relay-protocol"]

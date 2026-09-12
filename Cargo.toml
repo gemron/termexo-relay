@@ -54,7 +54,7 @@ rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
-termexo-relay-protocol = { git = "https://github.com/gemron/Termexo.git", branch = "main" }
+termexo-relay-protocol = { git = "https://github.com/gemron/Termexo.git", rev = "8e5164942ae2c75b3ff80343d69cd4f681f35498" }
 thiserror = "2.0"
 tokio = { version = "1", features = [
     "io-util",

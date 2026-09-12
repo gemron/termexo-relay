@@ -2176,6 +2176,7 @@ dependencies = [
 [[package]]
 name = "termexo-relay-protocol"
 version = "0.9.0"
+source = "git+https://github.com/gemron/Termexo.git?rev=8e5164942ae2c75b3ff80343d69cd4f681f35498#8e5164942ae2c75b3ff80343d69cd4f681f35498"
 dependencies = [
  "base64 0.22.1",
  "bytes",
