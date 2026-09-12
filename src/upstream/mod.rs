@@ -239,10 +239,11 @@ impl Default for UpstreamLink {
 /// It deliberately does not start a session — the operator runs it on a relay that is not serving
 /// yet, and `serve` picks the stored upstream up on its next start.
 pub async fn link(args: &LinkArgs) -> Result<(), String> {
-    std::fs::create_dir_all(&args.data_dir)
-        .map_err(|error| format!("无法创建数据目录 {}：{error}", args.data_dir.display()))?;
+    // `link` may well be the command that creates the data directory, on a relay that has never
+    // been served: it gets the same directory and the same permissions `serve` would have given it.
+    let data_dir = crate::paths::prepare_data_directory(&args.data_dir)?;
     let database =
-        Database::open(&args.data_dir).map_err(|error| format!("无法打开中继数据库：{error}"))?;
+        Database::open(&data_dir).map_err(|error| format!("无法打开中继数据库：{error}"))?;
     let name = link_name(&database, args.name.as_deref());
     let fingerprint = args
         .certificate_fingerprint

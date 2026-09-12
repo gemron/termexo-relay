@@ -72,7 +72,12 @@ pub struct Database {
 impl Database {
     /// Opens the database inside `data_directory`, creating and migrating it as needed.
     pub fn open(data_directory: &Path) -> Result<Self, DatabaseError> {
-        let connection = Connection::open(data_directory.join(DATABASE_FILE))?;
+        let file = data_directory.join(DATABASE_FILE);
+        let connection = Connection::open(&file)?;
+        // Console session tokens, device secret digests and password hashes all live in this file,
+        // and SQLite creates it under the process umask. Its `-wal` and `-shm` sidecars are covered
+        // by the data directory itself being owner-only.
+        crate::paths::restrict_to_owner(&file);
         // Foreign keys are off by default in SQLite; `devices.owner_user_id` is only useful as a
         // constraint if they are on.
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;

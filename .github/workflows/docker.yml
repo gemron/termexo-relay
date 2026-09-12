@@ -1,0 +1,166 @@
+# Publishes the multi-architecture container image to GitHub Container Registry.
+#
+# PREREQUISITE — like release.yml, this cannot succeed until `termexo-relay-protocol` exists on
+# Termexo's `main` branch, which Cargo.toml resolves the crate from, and until Cargo.lock has been
+# regenerated without the .cargo/config.toml patch so that `--locked` inside the Dockerfile accepts
+# the git source.
+#
+# Each architecture is built on a runner of that architecture and pushed by digest; a final job
+# joins the digests into one manifest list. The obvious alternative — one buildx job with
+# `platforms: linux/amd64,linux/arm64` under QEMU — would compile aws-lc-sys and the bundled SQLite
+# emulated for whichever architecture is not the host, which is an order of magnitude slower and
+# has a real chance of hitting the job timeout. Native runners are free for this and cost one extra
+# merge job.
+#
+# `.dockerignore` keeps `.cargo/` out of the build context, so no patch-removal step is needed here.
+
+name: Container image
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # Where build.rs looks for the console, relative to the repository root.
+  CONSOLE_BUNDLE: console/dist/relay-console/browser
+
+permissions:
+  contents: read
+
+jobs:
+  console:
+    name: Console
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # Built once and handed to both architectures: the bundle is architecture-independent, and
+      # installing the Angular workspace inside each image build would add a Node toolchain to a
+      # Dockerfile that deliberately does not need one.
+      - name: Build the console
+        uses: ./.github/actions/build-console
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: console-bundle
+          path: ${{ env.CONSOLE_BUNDLE }}
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: ${{ matrix.platform }}
+    needs: console
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `arch` exists only because artifact names may not contain a slash.
+          - platform: linux/amd64
+            arch: amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/download-artifact@v7.0.0
+        with:
+          name: console-bundle
+          path: ${{ env.CONSOLE_BUNDLE }}
+
+      - uses: docker/setup-buildx-action@v4.3.0
+
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Only the labels are used here; the tags are applied once, on the manifest list.
+      - uses: docker/metadata-action@v6.2.0
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v7.3.0
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: CONSOLE_DIR=${{ env.CONSOLE_BUNDLE }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+
+      # An empty file named after the digest; the merge job only needs the names.
+      - name: Export the digest
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Manifest list
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/download-artifact@v7.0.0
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4.3.0
+
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6.2.0
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+
+      - name: Create the manifest list
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect the published image
+        run: |
+          docker buildx imagetools inspect \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}

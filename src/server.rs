@@ -1,5 +1,6 @@
 //! Assembling the HTTP surface and running the listener.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -19,6 +20,7 @@ use crate::config::ServeArgs;
 use crate::console;
 use crate::db::{now_millis, Database, SETTING_PUBLIC_URL, SETTING_RELAY_ID};
 use crate::forwarded;
+use crate::paths;
 use crate::proxy::{self, DevicePath};
 use crate::registry::Registry;
 use crate::state::{RelayState, SharedState, RELAY_VERSION};
@@ -40,7 +42,9 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     let public_url = state.public_url().clone();
     let tls = tls::configure(
         &args.tls,
-        &args.data_dir,
+        // The same absolute directory the database was opened in, so the certificate cannot land
+        // somewhere else because a service manager changed the working directory.
+        &paths::absolute(&args.data_dir),
         &tls::SubjectNames {
             public_host: public_url.host_name().to_string(),
             wildcard: state.addressing.wildcard_name(),
@@ -49,7 +53,11 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     .await?;
     let listener = bind(args.listen)?;
     let handle = axum_server::Handle::<SocketAddr>::new();
-    tokio::spawn(shut_down_on_signal(handle.clone()));
+    tokio::spawn(shut_down_on(
+        wait_for_stop_request(),
+        handle.clone(),
+        state.upstream.clone(),
+    ));
 
     tracing::info!(
         listen = %args.listen,
@@ -105,10 +113,12 @@ pub async fn serve_on(
 
 /// Opens the database and builds the state every handler shares.
 pub async fn prepare(args: &ServeArgs) -> Result<SharedState, String> {
-    std::fs::create_dir_all(&args.data_dir)
-        .map_err(|error| format!("无法创建数据目录 {}：{error}", args.data_dir.display()))?;
+    let data_dir = paths::prepare_data_directory(&args.data_dir)?;
+    // Logged rather than left implicit: `--data-dir` is relative by default, and a systemd unit
+    // without a `WorkingDirectory` resolves it against `/`.
+    tracing::info!(data_dir = %data_dir.display(), "中继数据目录");
     let database =
-        Database::open(&args.data_dir).map_err(|error| format!("无法打开中继数据库：{error}"))?;
+        Database::open(&data_dir).map_err(|error| format!("无法打开中继数据库：{error}"))?;
 
     // Sessions that ran out are swept once per start; nothing will ever present them again.
     if let Err(error) = database.delete_expired_sessions(now_millis()) {
@@ -257,12 +267,163 @@ fn install_crypto_provider() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
-async fn shut_down_on_signal(handle: axum_server::Handle<SocketAddr>) {
-    if tokio::signal::ctrl_c().await.is_ok() {
-        tracing::info!("收到停止信号，正在关闭中继");
-        handle.graceful_shutdown(Some(SHUTDOWN_GRACE));
+/// Winds the relay down once `stop` names the signal that asked for it.
+///
+/// The waiting is a parameter so the wind-down can be exercised without raising a real signal,
+/// which a test would be sending to every other test in the same process.
+async fn shut_down_on(
+    stop: impl Future<Output = Option<&'static str>>,
+    handle: axum_server::Handle<SocketAddr>,
+    upstream: Arc<UpstreamLink>,
+) {
+    let Some(signal) = stop.await else {
+        return;
+    };
+    tracing::info!(signal, "收到停止信号，正在关闭中继");
+    // Signalled first and without waiting, so the grace period for in-flight requests runs while
+    // the upstream link winds down rather than after it.
+    handle.graceful_shutdown(Some(SHUTDOWN_GRACE));
+    // The listener is only one of the two doors. For as long as a downstream relay holds its
+    // upstream link open, the upstream keeps routing fresh requests into a process that is about to
+    // exit; dropping the link makes it answer "device offline" instead of cutting one in half.
+    upstream.stop().await;
+}
+
+/// Waits for the platform's "please stop", and answers with its name for the log.
+///
+/// `docker stop`, `systemctl stop` and a Kubernetes eviction all send SIGTERM and then SIGKILL once
+/// the grace period runs out: a relay listening for Ctrl-C alone would be killed outright, with
+/// every stream it carries cut mid-transfer and every device left waiting for its own timeout.
+#[cfg(unix)]
+async fn wait_for_stop_request() -> Option<&'static str> {
+    use tokio::signal::unix::SignalKind;
+
+    let mut terminate = stop_signal(SignalKind::terminate(), SIGNAL_TERMINATE)?;
+    let mut interrupt = stop_signal(SignalKind::interrupt(), SIGNAL_INTERRUPT)?;
+    tokio::select! {
+        _ = terminate.recv() => Some(SIGNAL_TERMINATE),
+        _ = interrupt.recv() => Some(SIGNAL_INTERRUPT),
     }
 }
 
+/// Registers one handler, reporting a kernel that refuses it instead of falling silent.
+#[cfg(unix)]
+fn stop_signal(
+    kind: tokio::signal::unix::SignalKind,
+    name: &str,
+) -> Option<tokio::signal::unix::Signal> {
+    match tokio::signal::unix::signal(kind) {
+        Ok(stream) => Some(stream),
+        Err(error) => {
+            tracing::error!(signal = name, %error, "无法注册停止信号，该信号将不会被处理");
+            None
+        }
+    }
+}
+
+/// Windows has no SIGTERM. The relay is deployed on Linux and only developed on Windows, where it
+/// runs in a terminal and is stopped with Ctrl-C, so that is the whole of it here.
+#[cfg(not(unix))]
+async fn wait_for_stop_request() -> Option<&'static str> {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => Some(SIGNAL_INTERRUPT),
+        Err(error) => {
+            tracing::error!(%error, "无法监听 Ctrl-C，停止请求将不会被处理");
+            None
+        }
+    }
+}
+
+/// The names that reach the log, so an operator can tell a `docker stop` from a Ctrl-C.
+#[cfg(unix)]
+const SIGNAL_TERMINATE: &str = "SIGTERM";
+#[cfg(unix)]
+const SIGNAL_INTERRUPT: &str = "SIGINT";
+#[cfg(not(unix))]
+const SIGNAL_INTERRUPT: &str = "Ctrl-C";
+
 /// How long in-flight requests get before the listener is torn down anyway.
 const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Shaped like a real device credential so the settings parse; nothing ever dials with it.
+    const UPSTREAM_CREDENTIAL: &str =
+        "tdc1.abcdefghijklmnopqrstuvwxyz.c2VjcmV0LXZhbHVlLWZvci10ZXN0aW5n";
+    /// Discard: closed on every machine these tests run on, so the link fails fast and backs off.
+    const UNREACHABLE_UPSTREAM: &str = "https://127.0.0.1:9";
+    /// Long enough to catch a listener that never stops, short enough not to stall the suite.
+    const NOT_SHUTTING_DOWN: std::time::Duration = std::time::Duration::from_millis(200);
+
+    fn ephemeral_listener() -> std::net::TcpListener {
+        bind("127.0.0.1:0".parse().expect("a valid address")).expect("the listener should bind")
+    }
+
+    /// A stop request has to close both doors. The listener is the obvious one; the upstream link
+    /// is the one that would otherwise keep feeding requests into a process on its way out.
+    #[tokio::test]
+    async fn a_stop_request_closes_the_listener_and_the_upstream_link() {
+        let state = crate::state::tests::state_for_tests("relay-a");
+        let settings = crate::upstream::UpstreamSettings::build(
+            UNREACHABLE_UPSTREAM,
+            UPSTREAM_CREDENTIAL.to_string(),
+            None,
+        )
+        .expect("the upstream settings should build");
+        state.upstream.start(state.clone(), settings).await;
+        assert!(state.upstream.view().is_some(), "上游链接应当已经启动");
+
+        let handle = axum_server::Handle::<SocketAddr>::new();
+        let serving = tokio::spawn(serve_on(
+            ephemeral_listener(),
+            state.clone(),
+            None,
+            handle.clone(),
+        ));
+
+        shut_down_on(
+            std::future::ready(Some(SIGNAL_INTERRUPT)),
+            handle,
+            state.upstream.clone(),
+        )
+        .await;
+
+        let served = tokio::time::timeout(SHUTDOWN_GRACE, serving)
+            .await
+            .expect("the listener should stop within the grace period")
+            .expect("the serving task should not panic");
+        assert!(served.is_ok(), "关闭后服务应当正常退出");
+        assert_eq!(state.upstream.view(), None, "上游链接应当已经停止");
+    }
+
+    /// A wait that never names a signal — a kernel that refused the handler — has to leave the
+    /// relay serving rather than take it down on its way past.
+    #[tokio::test]
+    async fn a_wait_that_names_no_signal_shuts_nothing_down() {
+        let state = crate::state::tests::state_for_tests("relay-a");
+        let handle = axum_server::Handle::<SocketAddr>::new();
+        let serving = tokio::spawn(serve_on(
+            ephemeral_listener(),
+            state.clone(),
+            None,
+            handle.clone(),
+        ));
+
+        shut_down_on(
+            std::future::ready(None),
+            handle.clone(),
+            state.upstream.clone(),
+        )
+        .await;
+
+        assert!(
+            tokio::time::timeout(NOT_SHUTTING_DOWN, serving)
+                .await
+                .is_err(),
+            "没有停止信号时服务应当继续运行"
+        );
+        handle.shutdown();
+    }
+}

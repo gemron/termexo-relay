@@ -1,0 +1,214 @@
+# Builds the release binaries for every supported operating system and CPU architecture, then
+# publishes them on the GitHub release for the tag.
+#
+# PREREQUISITE — this workflow cannot succeed yet. Cargo.toml resolves `termexo-relay-protocol` from
+# `https://github.com/gemron/Termexo.git` branch `main`, and that branch does not carry the crate
+# yet (the split still lives on Termexo's `feature/relay-service`). Every build job fails at
+# dependency resolution until Termexo publishes the crate on `main`.
+#
+# Lockfile — the committed Cargo.lock records `termexo-relay-protocol` as a path dependency, an
+# artifact of .cargo/config.toml being in place when it was written. `--locked` refuses the
+# resolution change that removing the patch causes, so once the crate is on Termexo's `main` the
+# lockfile has to be regenerated without the patch and committed.
+#
+# Every target is built on a runner of its own architecture. Cross-compiling would drag in a
+# cross-linker and a cross C toolchain for aws-lc-sys and the bundled SQLite, both of which compile
+# C; native runners cost nothing extra and keep the build honest.
+
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Where build.rs looks for the console, relative to the repository root.
+  CONSOLE_BUNDLE: console/dist/relay-console/browser
+
+jobs:
+  prepare:
+    name: Console and version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # The version is duplicated across the manifests, so a release is the right place to insist
+      # they agree before eight runners spend time on it.
+      - name: Determine the release version
+        id: version
+        shell: bash
+        run: |
+          manifest="$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)"
+          console="$(node -p "require('./console/package.json').version")"
+          if [ "$console" != "$manifest" ]; then
+            echo "::error::console/package.json is $console but Cargo.toml is $manifest"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [ "$tag" != "$manifest" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $manifest"
+              exit 1
+            fi
+          fi
+          echo "version=$manifest" >> "$GITHUB_OUTPUT"
+
+      # The console bundle is architecture-independent, so it is built once and handed to every
+      # build job. Installing the Angular workspace on all eight runners would cost far more than
+      # moving a few hundred kilobytes between them, and it guarantees one identical console in
+      # every artifact.
+      - name: Build the console
+        uses: ./.github/actions/build-console
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: console-bundle
+          path: ${{ env.CONSOLE_BUNDLE }}
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: ${{ matrix.target }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            musl: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            musl: true
+          # macos-13 was retired in December 2025; macos-15-intel is GitHub's replacement Intel
+          # image and is supported until August 2027.
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # See ci.yml: the patch points at a sibling Termexo checkout that no runner has, and cargo
+      # fails outright on a patch whose path is missing.
+      - name: Drop the sibling-checkout patch
+        shell: bash
+        run: rm -f .cargo/config.toml
+
+      # musl-gcc is not on the Ubuntu images. aws-lc-sys and libsqlite3-sys both compile C, and
+      # without it cc would emit glibc objects that cannot link into a static musl binary.
+      - name: Install the musl C toolchain
+        if: matrix.musl
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          target_env="$(echo '${{ matrix.target }}' | tr '-' '_')"
+          echo "CC_${target_env}=musl-gcc" >> "$GITHUB_ENV"
+
+      # A no-op for the host target; it installs the standard library for the musl ones.
+      - name: Add the target
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: actions/download-artifact@v7.0.0
+        with:
+          name: console-bundle
+          path: ${{ env.CONSOLE_BUNDLE }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          staging="termexo-relay-${VERSION}-${TARGET}"
+          mkdir -p "dist/${staging}"
+          cp "target/${TARGET}/release/termexo-relay" "dist/${staging}/"
+          cp README.md "dist/${staging}/"
+          tar -C dist -czf "dist/${staging}.tar.gz" "${staging}"
+
+      # Git for Windows ships no `zip`, so the archive is made with Compress-Archive. Passing the
+      # directory rather than its contents keeps the same single top-level folder as the tarballs.
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          $staging = "termexo-relay-${env:VERSION}-${env:TARGET}"
+          New-Item -ItemType Directory -Force -Path "dist/$staging" | Out-Null
+          Copy-Item "target/${env:TARGET}/release/termexo-relay.exe" "dist/$staging/"
+          Copy-Item README.md "dist/$staging/"
+          Compress-Archive -Path "dist/$staging" -DestinationPath "dist/$staging.zip"
+
+      - uses: actions/upload-artifact@v7.0.1
+        with:
+          name: archive-${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v7.0.0
+        with:
+          path: dist
+          pattern: archive-*
+          merge-multiple: true
+
+      # One SHA256SUMS over every archive, in the format `sha256sum --check` expects.
+      - name: Collect checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz *.zip | tee SHA256SUMS
+
+      # workflow_dispatch runs stop short of a release: the archives stay downloadable from the run,
+      # which is what makes the matrix testable without cutting one.
+      - name: Create the GitHub release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+      - uses: actions/upload-artifact@v7.0.1
+        if: github.ref_type != 'tag'
+        with:
+          name: release-archives
+          path: dist/*
+          if-no-files-found: error

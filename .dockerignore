@@ -5,7 +5,10 @@
 target/
 relay-data/
 console/node_modules/
-console/dist/
 console/.angular/
 console/out-tsc/
 .git/
+
+# console/dist/ is deliberately kept: `--build-arg CONSOLE_DIR=console/dist/relay-console/browser`
+# can only reach a console that is part of the build context. The Dockerfile still defaults to the
+# placeholder, so a plain `docker build` ignores whatever happens to be sitting there.

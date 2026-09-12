@@ -8,6 +8,58 @@ Termexo 的中继服务。桌面端主动向它建立一条出站隧道，手机
 [Termexo](https://github.com/gemron/Termexo) 仓库所有——桌面端也要编译同一份——本仓库通过 git
 依赖引用它，设计文档 `docs/architecture/relay-service.md` 也在那边。
 
+## 支持的平台
+
+每打一个 `v*` tag，CI 会在各自架构的原生构建机上编译，并把下列产物连同一份 `SHA256SUMS` 发到
+[Releases](https://github.com/gemron/termexo-relay/releases)。归档里是可执行文件和这份 README，
+解压即可运行，没有别的运行时依赖。
+
+| 操作系统 | 架构 | 归档 | target triple |
+| --- | --- | --- | --- |
+| Linux（glibc） | x86-64 | `.tar.gz` | `x86_64-unknown-linux-gnu` |
+| Linux（glibc） | ARM64 | `.tar.gz` | `aarch64-unknown-linux-gnu` |
+| Linux（musl，静态链接） | x86-64 | `.tar.gz` | `x86_64-unknown-linux-musl` |
+| Linux（musl，静态链接） | ARM64 | `.tar.gz` | `aarch64-unknown-linux-musl` |
+| macOS | Intel | `.tar.gz` | `x86_64-apple-darwin` |
+| macOS | Apple Silicon | `.tar.gz` | `aarch64-apple-darwin` |
+| Windows | x86-64 | `.zip` | `x86_64-pc-windows-msvc` |
+| Windows | ARM64 | `.zip` | `aarch64-pc-windows-msvc` |
+
+归档命名形如 `termexo-relay-0.9.0-x86_64-unknown-linux-gnu.tar.gz`。校验：
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+musl 两个是静态链接的，不依赖发行版的 glibc 版本，老系统和 Alpine 用它；其余 Linux 场景用 glibc
+版本即可。容器镜像见下面的[容器](#容器)一节，同样提供 amd64 与 arm64。
+
+这张表以外的平台（FreeBSD、32 位 ARM、Linux riscv64 等）**没有预编译产物**，但源码里没有任何
+平台专有分支，自行编译通常可行。
+
+### 从源码构建
+
+只需要两样东西：
+
+* **Rust 工具链**，版本不低于 `Cargo.toml` 里的 `rust-version`（当前 1.88）；
+* **一个 C/C++ 编译器**——TLS 用的 `aws-lc-rs` 和 `rusqlite` 的 `bundled` SQLite 都要编 C。
+
+非 FIPS 构建**不需要** CMake、bindgen 或 Go：`aws-lc-rs` 自带预生成的绑定，Windows x86-64 还有一份
+预编译的 NASM 目标兜底。各平台具体要装的是：
+
+| 平台 | 需要 |
+| --- | --- |
+| Linux | `build-essential`（gcc）；musl 目标另需 `musl-tools`，它提供 `musl-gcc` |
+| macOS | Xcode 命令行工具（`xcode-select --install`） |
+| Windows | Visual Studio 2022 生成工具的「使用 C++ 的桌面开发」工作负载（MSVC） |
+
+```bash
+cargo build --release            # 产物 target/release/termexo-relay
+```
+
+这样编出来的二进制里嵌的是控制台**占位页**。要嵌真实控制台，先构建前端再编译——那一步需要 Node，
+详见下面的[开发](#开发)一节。
+
 ## 启动
 
 ```bash
@@ -39,6 +91,44 @@ TLS 三种模式：
 
 中继**不内置 ACME**（Let's Encrypt 自动证书）。公网部署请把它放在 Caddy 后面用 `--tls off`，由
 Caddy 申请和续期证书；这也是设计文档推荐的方式。
+
+### 数据目录的权限
+
+中继是无人值守的服务进程，没有 keyring：数据库里的控制台会话令牌、设备密钥的 SHA-256、argon2 密码
+哈希与审计，以及 `--tls self-signed` 生成的私钥，全都只靠文件权限保护。因此每次启动（`serve` 与
+`link` 都一样）中继会把
+
+* `<data-dir>/` 与 `<data-dir>/tls/` 收紧为 `0700`；
+* `<data-dir>/relay.db` 与 `<data-dir>/tls/key.pem` 收紧为 `0600`。
+
+`cert.pem` 是公开的，不动；SQLite 的 `-wal` / `-shm` 边车文件由 `0700` 的目录挡住。收紧只会**去掉**
+同组和其他用户的权限，不会放宽你自己设得更严的位（比如私钥留在 `0400`），已经正确的权限不会被重复
+改写；旧版本升级上来的数据目录会在下一次启动时一并修好。文件系统不支持权限位时只打印一条告警，不
+影响启动。Windows 上不做处理，文件按所在目录的 ACL 继承。
+
+> 收紧之后只有**运行中继的那个用户**能读写数据目录。容器换 UID、改用别的服务账号，或者让备份进程去
+> 读这个目录时，记得先 `chown -R`。
+
+启动日志会打印实际使用的**绝对**路径 —— `--data-dir` 默认值 `relay-data` 是相对路径，systemd 单元
+没有 `WorkingDirectory` 时会落到 `/relay-data`：
+
+```
+INFO termexo_relay::server: 中继数据目录 data_dir=/var/lib/termexo-relay
+```
+
+## 停止
+
+Unix 上中继同时监听 **SIGTERM** 与 **SIGINT**：`docker stop`、`systemctl stop`、Kubernetes 驱逐发来
+的都是 SIGTERM。收到之后它
+
+1. 不再接受新的 HTTP 连接，给进行中的请求最多 5 秒；
+2. 断开与上游中继的链接（如果配置了），让上游立刻回「设备离线」，而不是把新请求打进一个正在退出的
+   进程。凭据不会被清除，重启后自动重连。
+
+设备隧道是长连接，有设备在线时这个过程一般就是整整 5 秒，所以停止宽限期要留够：Docker 默认 10 秒、
+systemd 默认 90 秒、Kubernetes 默认 30 秒都足够。日志里会写明是哪个信号停的它。
+
+Windows 上只处理 Ctrl-C——中继的部署目标是 Linux，Windows 只用于开发。
 
 ## 设备访问策略
 
@@ -200,16 +290,34 @@ location / {
 
 ## 容器
 
+镜像发布在 GitHub Container Registry，是一份同时包含 `linux/amd64` 与 `linux/arm64` 的 manifest
+list，docker 会自动拉取匹配当前机器的那一个：
+
 ```bash
-docker build -t termexo-relay .
 docker run -d --name termexo-relay \
   -p 8443:8443 \
   -v termexo-relay-data:/var/lib/termexo-relay \
   -e TERMEXO_RELAY_PUBLIC_URL=https://relay.example.com \
-  termexo-relay
+  ghcr.io/gemron/termexo-relay:0.9.0
 ```
 
+可用标签：`0.9.0`（精确版本）、`0.9`（次版本线的最新）、`latest`（最新 tag）、`main`（主分支最新
+提交，用于尝鲜，不建议生产用）。
+
+镜像基于 `debian:bookworm-slim`，SQLite 已经编进二进制，运行时只额外带了 CA 证书。**没有**再单独出
+一份 musl/alpine 镜像：静态二进制在 Releases 里已经有了，为它多维护一个 Dockerfile 不划算。
+
+`docker stop` 发出的 SIGTERM 会直接送到中继进程——`ENTRYPOINT` 用的是 exec 形式，中继就是 PID 1
+——中继收到后停止接受新连接、关闭隧道并退出，不用等到超时被 SIGKILL。
+
 首次启动的管理员密码用 `docker logs termexo-relay` 查看。
+
+自己构建镜像时，先构建控制台再把它的目录传进去，否则嵌进去的是占位页：
+
+```bash
+npm --prefix console install && npm --prefix console run build
+docker build --build-arg CONSOLE_DIR=console/dist/relay-console/browser -t termexo-relay .
+```
 
 ## 开发
 
@@ -234,6 +342,25 @@ npm --prefix console run build      # 产物 console/dist/relay-console/browser
 `Cargo.toml` 把 `termexo-relay-protocol` 声明为 Termexo 仓库的 git 依赖。`.cargo/config.toml` 里有
 一条 patch，让**相邻目录**的 Termexo 检出优先：两个仓库并排放时，改完协议不必先推送就能在这里编译。
 只想按 git 版本构建（Docker 与全新克隆就是如此）就删掉那个文件。
+
+### 持续集成与发布
+
+| 工作流 | 触发 | 做什么 |
+| --- | --- | --- |
+| `.github/workflows/ci.yml` | push / PR | Linux x64、macOS ARM64、Windows x64 三格跑 `cargo fmt --check`、`clippy -D warnings`、`cargo test --locked`；另一格跑控制台的测试、构建与 `prettier --check` |
+| `.github/workflows/release.yml` | `v*` tag、手动 | 上表八个目标各在**自己架构的构建机**上编译打包，汇总 `SHA256SUMS`，创建 Release |
+| `.github/workflows/docker.yml` | push main、`v*` tag、手动 | amd64 与 arm64 各在原生构建机上建镜像，按 digest 推送后合并成一份 manifest list 推到 ghcr.io |
+
+都不交叉编译：`aws-lc-rs` 与 bundled SQLite 都要编 C，交叉工具链比多开一台构建机麻烦得多。控制台
+只构建一次，再作为 artifact 分发给各个构建机，因此每份产物里的控制台是同一份。
+
+两个前提：
+
+* 各工作流在跑 cargo 之前会删掉 `.cargo/config.toml`（Docker 镜像靠 `.dockerignore` 排除它），
+  因为构建机上没有相邻的 Termexo 检出，而 cargo 遇到指向不存在路径的 patch 会直接报错；
+* `--locked` 要求 `Cargo.lock` 记录的是**git 来源**的 `termexo-relay-protocol`。当前提交里的
+  `Cargo.lock` 是带着那条 patch 生成的，把它记成了路径依赖，所以协议 crate 推到 Termexo 的 `main`
+  之后，需要在没有 patch 的情况下重新生成并提交一次 `Cargo.lock`。
 
 ## 已知限制
 

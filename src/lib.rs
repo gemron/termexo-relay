@@ -18,6 +18,7 @@ pub mod config;
 pub mod console;
 pub mod db;
 pub mod forwarded;
+pub mod paths;
 pub mod proxy;
 pub mod registry;
 pub mod server;

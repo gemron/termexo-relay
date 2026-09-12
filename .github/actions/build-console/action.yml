@@ -1,0 +1,26 @@
+name: Build the relay console
+description: >-
+  Installs the console workspace from its lockfile and produces the Angular bundle that build.rs
+  embeds with include_dir!. Release, container and CI workflows all need the same bundle, so the
+  steps and the pinned Node version live here once.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@v7.0.0
+      with:
+        # The console spawns its own pinned Node (the `node` devDependency) through
+        # scripts/run-angular.mjs; this one only has to be new enough to run npm against the
+        # lockfile.
+        node-version: '24'
+        cache: npm
+        cache-dependency-path: console/package-lock.json
+
+    - name: Install console dependencies
+      shell: bash
+      run: npm --prefix console ci
+
+    - name: Build the console bundle
+      shell: bash
+      run: npm --prefix console run build

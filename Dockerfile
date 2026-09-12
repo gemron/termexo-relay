@@ -7,6 +7,10 @@
 #   npm --prefix console install && npm --prefix console run build
 #   docker build --build-arg CONSOLE_DIR=console/dist/relay-console/browser -t termexo-relay .
 #
+# Both base images are published for linux/amd64 and linux/arm64, so the same Dockerfile builds
+# either architecture unchanged; `.github/workflows/docker.yml` builds each on a runner of its own
+# architecture and joins the two into one manifest list.
+#
 # `.dockerignore` keeps `.cargo/config.toml` out of the image deliberately: it redirects the protocol
 # crate at a sibling Termexo checkout, which does not exist here, so the image builds that crate from
 # the git revision `Cargo.lock` pins.
@@ -17,8 +21,18 @@ WORKDIR /src
 COPY . .
 
 ARG CONSOLE_DIR=console-placeholder
-RUN mkdir -p console/dist/relay-console \
-    && cp -r "${CONSOLE_DIR}" console/dist/relay-console/browser
+# CONSOLE_DIR may already be the directory build.rs reads, because the build context can carry a
+# console built outside the image; copying a directory onto itself would fail, so that case is a
+# no-op. The final test turns a mistyped CONSOLE_DIR into a build failure rather than an image that
+# silently serves nothing.
+RUN set -eu; \
+    bundle=console/dist/relay-console/browser; \
+    if [ "${CONSOLE_DIR}" != "${bundle}" ]; then \
+        rm -rf "${bundle}"; \
+        mkdir -p console/dist/relay-console; \
+        cp -r "${CONSOLE_DIR}" "${bundle}"; \
+    fi; \
+    test -f "${bundle}/index.html"
 
 RUN cargo build --release --locked
 
@@ -39,5 +53,6 @@ VOLUME ["/var/lib/termexo-relay"]
 ENV TERMEXO_RELAY_LISTEN=0.0.0.0:8443
 EXPOSE 8443
 
+# Exec form, so the relay is PID 1 and `docker stop` delivers SIGTERM straight to it.
 ENTRYPOINT ["termexo-relay"]
 CMD ["serve"]

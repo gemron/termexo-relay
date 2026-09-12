@@ -1,0 +1,95 @@
+# Pull-request and branch checks. Lighter than release.yml: one representative runner per operating
+# system rather than the full publish matrix.
+#
+# PREREQUISITE — this workflow cannot pass yet. Cargo.toml resolves `termexo-relay-protocol` from
+# `https://github.com/gemron/Termexo.git` branch `main`, and that branch does not carry the crate
+# yet (the split still lives on Termexo's `feature/relay-service`). Every Rust job here fails at
+# dependency resolution until Termexo publishes the crate on `main` and Cargo.lock is regenerated
+# with the resulting git source (see "Lockfile" below).
+#
+# Lockfile: the committed Cargo.lock records `termexo-relay-protocol` as a path dependency, because
+# it was produced with .cargo/config.toml in place. Once the crate is on Termexo's `main`, rebuild
+# the lockfile without that patch and commit it, otherwise `--locked` rejects the resolution change.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each runner builds for its own target — `target` only names the job and keys the cache.
+        # The full publish matrix lives in release.yml.
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      # .cargo/config.toml patches the protocol crate to ../Termexo, a sibling checkout that only
+      # exists on a developer machine. Cargo fails outright on a patch whose path is missing, so the
+      # file has to go before any cargo command runs. The Dockerfile achieves the same through
+      # .dockerignore.
+      - name: Drop the sibling-checkout patch
+        shell: bash
+        run: rm -f .cargo/config.toml
+
+      - name: Prepare the Rust toolchain
+        shell: bash
+        run: rustup component add clippy rustfmt
+
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          key: ${{ matrix.target }}
+
+      # Formatting is target-independent, but running it here keeps a contributor on any one
+      # platform from having to guess which job would have caught it.
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      # build.rs falls back to console-placeholder/, so the Rust suite needs no Node toolchain.
+      - name: Test
+        run: cargo test --locked
+
+  console:
+    name: Console
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Build the console
+        uses: ./.github/actions/build-console
+
+      - name: Test
+        run: npm --prefix console test -- --watch=false
+
+      - name: Check formatting
+        working-directory: console
+        run: npx prettier --check .
