@@ -1,6 +1,6 @@
 [package]
 name = "termexo-relay"
-version = "0.10.0"
+version = "0.10.1"
 description = "Termexo relay service: inbound device tunnels, a public reverse proxy and an admin console"
 authors = ["Termexo contributors"]
 edition = "2021"
