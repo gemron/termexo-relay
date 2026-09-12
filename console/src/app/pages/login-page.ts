@@ -52,7 +52,13 @@ const NEXT_PARAMETER = 'next';
           />
         </label>
 
-        <button type="submit" class="btn btn-primary" [disabled]="!canSubmit()">
+        <!-- Saying why it cannot be pressed yet, so a greyed-out button never reads as broken. -->
+        <button
+          type="submit"
+          class="btn btn-primary"
+          [disabled]="!canSubmit()"
+          [attr.title]="canSubmit() ? null : ('console.login.needCredentials' | t)"
+        >
           {{ (busy() ? 'console.login.submitting' : 'console.login.submit') | t }}
         </button>
       </form>

@@ -28,12 +28,21 @@ describe('EnrollmentsPageComponent', () => {
   let root: HTMLElement;
   let createEnrollment: ReturnType<typeof vi.fn>;
 
-  const issueButton = () => root.querySelector<HTMLButtonElement>('form button[type="submit"]')!;
+  const issueButton = () =>
+    root.querySelector<HTMLButtonElement>('.drawer-panel button[type="submit"]')!;
   const revealed = () => root.querySelector('.code-reveal code')?.textContent?.trim();
 
   async function mount(): Promise<void> {
     fixture = TestBed.createComponent(EnrollmentsPageComponent);
     root = fixture.nativeElement as HTMLElement;
+    fixture.detectChanges();
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  /** Issuing lives in a drawer, so every test that issues a code has to open it first. */
+  async function openDrawer(): Promise<void> {
+    root.querySelector<HTMLButtonElement>('.page-actions .btn-primary')!.click();
     fixture.detectChanges();
     await fixture.whenStable();
     fixture.detectChanges();
@@ -69,6 +78,7 @@ describe('EnrollmentsPageComponent', () => {
 
   it('reveals the issued code once, prominently, with a way to copy it', async () => {
     await mount();
+    await openDrawer();
 
     issueButton().click();
     await fixture.whenStable();
@@ -81,11 +91,13 @@ describe('EnrollmentsPageComponent', () => {
 
   it('drops the previous code when a new one is issued, so only one is ever on screen', async () => {
     await mount();
+    await openDrawer();
     issueButton().click();
     await fixture.whenStable();
     fixture.detectChanges();
 
     createEnrollment.mockResolvedValue({ enrollment: enrollment({ id: 'e2' }), code: 'NEW-CODE' });
+    await openDrawer();
     issueButton().click();
     await fixture.whenStable();
     fixture.detectChanges();
@@ -96,6 +108,7 @@ describe('EnrollmentsPageComponent', () => {
 
   it('refuses a lifetime the relay would reject anyway', async () => {
     await mount();
+    await openDrawer();
     const ttl = root.querySelector<HTMLInputElement>('input[name="ttl"]')!;
     ttl.value = '5000';
     ttl.dispatchEvent(new Event('input'));

@@ -2,7 +2,7 @@ import { Component, inject, input, output } from '@angular/core';
 
 import type { DeviceView } from '../core/console.models';
 import { deviceStatus } from '../shared/device-status';
-import { formatMoment, formatSince, formatText } from '../shared/format';
+import { formatMoment, formatText } from '../shared/format';
 import { CopyButtonComponent } from '../shared/copy-button';
 import { I18nService, TranslatePipe } from '../shared/workspace-ui';
 
@@ -21,14 +21,9 @@ import { I18nService, TranslatePipe } from '../shared/workspace-ui';
               <th>{{ 'console.devices.owner' | t }}</th>
             }
             <th>{{ 'console.devices.status' | t }}</th>
-            <th>{{ 'console.devices.connectedSince' | t }}</th>
             <th>{{ 'console.devices.lastSeen' | t }}</th>
             @if (detailed()) {
-              <th>{{ 'console.devices.ip' | t }}</th>
-            }
-            <th>{{ 'console.devices.version' | t }}</th>
-            @if (detailed()) {
-              <th>{{ 'console.devices.via' | t: { names: '' } }}</th>
+              <th>{{ 'console.devices.viaColumn' | t }}</th>
             }
             <th></th>
           </tr>
@@ -53,12 +48,7 @@ import { I18nService, TranslatePipe } from '../shared/workspace-ui';
                   {{ statusOf(device).key | t }}
                 </span>
               </td>
-              <td>{{ since(device.connectedSince) }}</td>
               <td>{{ moment(device.lastSeenAt) }}</td>
-              @if (detailed()) {
-                <td class="cell-mono">{{ text(device.lastIp) }}</td>
-              }
-              <td class="cell-mono">{{ text(device.lastVersion) }}</td>
               @if (detailed()) {
                 <td>{{ via(device) }}</td>
               }
@@ -91,14 +81,9 @@ export class DeviceTableComponent {
   readonly opened = output<DeviceView>();
 
   protected readonly statusOf = deviceStatus;
-  protected readonly text = formatText;
 
   protected moment(value: number | null): string {
     return formatMoment(value, this.i18n.locale());
-  }
-
-  protected since(value: number | null): string {
-    return formatSince(value, this.i18n.locale());
   }
 
   protected kindLabel(device: DeviceView): string {

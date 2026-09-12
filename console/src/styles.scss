@@ -171,14 +171,27 @@ a {
     margin-top: $space-4;
   }
 
-  > h2 {
-    margin-bottom: $space-3;
+  > h2,
+  > .card-head > h2 {
     color: var(--text-secondary);
     font-size: 11px;
     font-weight: 650;
     letter-spacing: 0.06em;
     text-transform: uppercase;
   }
+
+  > h2 {
+    margin-bottom: $space-3;
+  }
+}
+
+/* A section's "see the rest of it" belongs beside its title, not below its content. */
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: $space-3;
+  margin-bottom: $space-3;
 }
 
 .card-grid {
@@ -187,14 +200,16 @@ a {
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
 
+/* The figures stand on the page rather than inside a card: one border around them is enough. */
 .stat-grid {
   display: grid;
   gap: $space-3;
+  margin-bottom: $space-4;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .stat {
-  padding: $space-3 $space-4;
+  padding: $space-3;
   border: 1px solid var(--border);
   border-radius: var(--radius-field);
   background: var(--surface-raised);
@@ -204,11 +219,21 @@ a {
     font-size: 11px;
   }
 
+  /* A fixed value row keeps every box the same height, whatever it holds. */
   dd {
+    display: flex;
+    height: 26px;
+    align-items: center;
     margin-top: $space-1;
-    font-size: 22px;
+    font-size: 20px;
     font-weight: 650;
     font-variant-numeric: tabular-nums;
+  }
+
+  /* A state is a word, not a figure, so it takes reading weight in the same box. */
+  dd.stat-word {
+    font-size: 13px;
+    font-weight: 560;
   }
 }
 
@@ -264,6 +289,28 @@ a {
     font: 11.5px/1.4 var(--mono);
   }
 
+  /* A stored reference reads as its name; the identifier stays as a quiet second line. */
+  .cell-entity {
+    display: grid;
+    gap: 2px;
+
+    small {
+      color: var(--text-muted);
+      font: 11px/1.3 var(--mono);
+    }
+  }
+
+  .cell-entity-name {
+    color: var(--text);
+  }
+
+  /* Detail can run long; the column keeps its width and the tooltip carries the whole value. */
+  .cell-detail {
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
   .cell-actions {
     display: flex;
     gap: $space-2;
@@ -273,16 +320,29 @@ a {
 
 /* --------------------------------------------------------------- status -- */
 
-/* Colour alone never carries meaning: every dot ships with its word. */
+/*
+   Colour alone never carries meaning: every dot ships with its word.
+
+   daisyUI 5 has a `.status` utility of its own — a bare 8px gradient square — and without the
+   reset below it collapses this span to that size, leaving the dot sitting on top of the word.
+   The geometry is undone here, in the one place the dot is defined, rather than by renaming the
+   class in every template that uses it.
+*/
 .status {
   display: inline-flex;
+  width: auto;
+  height: auto;
   align-items: center;
   gap: 6px;
+  aspect-ratio: auto;
+  background: none;
+  box-shadow: none;
   color: var(--text-muted);
   font-size: 12px;
   white-space: nowrap;
 
   &::before {
+    flex: none;
     width: 7px;
     height: 7px;
     border-radius: 50%;
@@ -335,9 +395,15 @@ a {
     border-color: color-mix(in oklab, var(--color-base-content) 32%, transparent);
   }
 
+  /*
+     A disabled button drops its own colour rather than fading it: a dimmed primary still looks
+     like a filled button, and an operator cannot tell "not yet" from "this is how it looks".
+  */
   &:disabled {
     cursor: not-allowed;
-    opacity: 0.45;
+    border-color: var(--border);
+    color: var(--text-muted);
+    background: var(--surface-2);
   }
 }
 
@@ -375,6 +441,11 @@ a {
   &:hover:not(:disabled) {
     color: var(--accent);
     text-decoration: underline;
+  }
+
+  /* Text stays text when it is disabled; the shared rule above would give it a filled pill. */
+  &:disabled {
+    background: none;
   }
 
   &.danger {
@@ -561,8 +632,11 @@ textarea {
   box-shadow: -18px 0 40px rgba(0, 0, 0, 0.35);
 }
 
+/* Both rows are placed by hand: daisyUI 5 has a `.drawer-content` of its own that claims the
+   first grid cell, which otherwise pushes this panel's heading and body side by side. */
 .drawer-head {
   display: flex;
+  grid-area: 1 / 1;
   align-items: center;
   justify-content: space-between;
   gap: $space-3;
@@ -576,6 +650,7 @@ textarea {
 }
 
 .drawer-content {
+  grid-area: 2 / 1;
   padding: $space-5;
   overflow: auto;
 }
@@ -663,10 +738,16 @@ textarea {
   width: min(340px, calc(100vw - 40px));
 }
 
+/* daisyUI 5 has a `.toast` of its own that pins itself to a corner of the viewport as a column.
+   The host above already does the positioning, so one notification is put back in the flow here. */
 .toast {
+  position: static;
   display: flex;
+  width: auto;
   align-items: flex-start;
   gap: $space-2;
+  flex-direction: row;
+  translate: none;
   padding: 10px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-field);

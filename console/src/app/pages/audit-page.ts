@@ -4,10 +4,15 @@ import { FormsModule } from '@angular/forms';
 import { ConsoleApiService } from '../core/console-api.service';
 import { describeConsoleError } from '../core/console-error';
 import { registerRelayConsoleTranslations } from '../core/console.i18n';
-import type { AuditActorKind, AuditView } from '../core/console.models';
-import { formatMoment, formatText } from '../shared/format';
+import type { AuditView } from '../core/console.models';
+import {
+  buildNameDirectory,
+  EMPTY_NAME_DIRECTORY,
+  type NameDirectory,
+} from '../shared/name-directory';
 import { PageState, StateBlockComponent } from '../shared/state-block';
 import { I18nService, TranslatePipe } from '../shared/workspace-ui';
+import { AuditTableComponent } from './audit-table';
 
 // Registered at module scope so the wording is in place before the component is built.
 registerRelayConsoleTranslations();
@@ -15,15 +20,9 @@ registerRelayConsoleTranslations();
 /** One screenful and then some; the page loads further batches on demand. */
 const PAGE_SIZE = 100;
 
-const ACTOR_LABEL_KEYS: Readonly<Record<AuditActorKind, string>> = {
-  user: 'console.audit.actorUser',
-  device: 'console.audit.actorDevice',
-  system: 'console.audit.actorSystem',
-};
-
 @Component({
   selector: 'console-audit-page',
-  imports: [FormsModule, StateBlockComponent, TranslatePipe],
+  imports: [AuditTableComponent, FormsModule, StateBlockComponent, TranslatePipe],
   template: `
     <header class="page-header">
       <div>
@@ -55,32 +54,7 @@ const ACTOR_LABEL_KEYS: Readonly<Record<AuditActorKind, string>> = {
 
     @if (state() === 'ready') {
       <div class="card">
-        <div class="table-scroll">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>{{ 'console.audit.time' | t }}</th>
-                <th>{{ 'console.audit.actor' | t }}</th>
-                <th>{{ 'console.audit.action' | t }}</th>
-                <th>{{ 'console.audit.target' | t }}</th>
-                <th>{{ 'console.audit.ip' | t }}</th>
-                <th>{{ 'console.audit.detail' | t }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              @for (event of events(); track event.id) {
-                <tr>
-                  <td>{{ moment(event.at) }}</td>
-                  <td>{{ actorLabel(event) }}</td>
-                  <td class="cell-name">{{ event.action }}</td>
-                  <td class="cell-mono">{{ text(event.targetId) }}</td>
-                  <td class="cell-mono">{{ text(event.ip) }}</td>
-                  <td>{{ text(event.detail) }}</td>
-                </tr>
-              }
-            </tbody>
-          </table>
-        </div>
+        <console-audit-table [events]="events()" [directory]="directory()" [detailed]="true" />
 
         @if (hasMore()) {
           <div class="form-actions">
@@ -113,8 +87,8 @@ export class AuditPageComponent {
   protected readonly targetId = signal('');
   /** A short last batch means the log is exhausted, so the button disappears. */
   protected readonly hasMore = signal(false);
-
-  protected readonly text = formatText;
+  /** Names for the identifiers in the log; without them every row is a pair of opaque ids. */
+  protected readonly directory = signal<NameDirectory>(EMPTY_NAME_DIRECTORY);
 
   protected readonly state = computed<PageState>(() => {
     if (this.loading()) return 'loading';
@@ -128,15 +102,6 @@ export class AuditPageComponent {
 
   protected reload(): void {
     void this.load();
-  }
-
-  protected moment(value: number): string {
-    return formatMoment(value, this.i18n.locale());
-  }
-
-  protected actorLabel(event: AuditView): string {
-    const kind = this.i18n.t(ACTOR_LABEL_KEYS[event.actorKind]);
-    return event.actorId ? `${kind} · ${event.actorId}` : kind;
   }
 
   protected applyFilter(): void {
@@ -177,11 +142,14 @@ export class AuditPageComponent {
     this.loading.set(true);
     this.error.set('');
     try {
-      const batch = await this.api.listAudit({
-        limit: PAGE_SIZE,
-        targetId: this.targetId() || undefined,
-      });
+      // One round trip's worth of latency for all three: the log is unreadable on its own.
+      const [batch, users, devices] = await Promise.all([
+        this.api.listAudit({ limit: PAGE_SIZE, targetId: this.targetId() || undefined }),
+        this.api.listUsers(),
+        this.api.listAllDevices(),
+      ]);
       this.events.set(batch);
+      this.directory.set(buildNameDirectory(users, devices));
       this.hasMore.set(batch.length === PAGE_SIZE);
     } catch (error) {
       this.error.set(

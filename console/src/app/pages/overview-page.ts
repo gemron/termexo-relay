@@ -6,9 +6,14 @@ import { describeConsoleError } from '../core/console-error';
 import { registerRelayConsoleTranslations } from '../core/console.i18n';
 import type { AuditView, DeviceView, UpstreamView } from '../core/console.models';
 import { SessionService } from '../core/session.service';
-import { formatMoment, formatText } from '../shared/format';
+import {
+  buildNameDirectory,
+  EMPTY_NAME_DIRECTORY,
+  type NameDirectory,
+} from '../shared/name-directory';
 import { PageState, StateBlockComponent } from '../shared/state-block';
 import { I18nService, TranslatePipe } from '../shared/workspace-ui';
+import { AuditTableComponent } from './audit-table';
 import { DeviceTableComponent } from './device-table';
 
 // Registered at module scope so the wording is in place before the component is built.
@@ -26,7 +31,13 @@ const UPSTREAM_STATE_KEYS: Readonly<Record<UpstreamView['state'], string>> = {
 
 @Component({
   selector: 'console-overview-page',
-  imports: [DeviceTableComponent, RouterLink, StateBlockComponent, TranslatePipe],
+  imports: [
+    AuditTableComponent,
+    DeviceTableComponent,
+    RouterLink,
+    StateBlockComponent,
+    TranslatePipe,
+  ],
   template: `
     <header class="page-header">
       <div>
@@ -45,33 +56,37 @@ const UPSTREAM_STATE_KEYS: Readonly<Record<UpstreamView['state'], string>> = {
     @if (state() !== 'ready') {
       <console-state-block [state]="state()" [error]="error()" (retry)="reload()" />
     } @else {
-      <div class="card">
-        <dl class="stat-grid">
+      <dl class="stat-grid">
+        <div class="stat">
+          <dt>{{ 'console.overview.devicesOnline' | t }}</dt>
+          <dd>{{ onlineCount() }}</dd>
+        </div>
+        <div class="stat">
+          <dt>{{ 'console.overview.devicesTotal' | t }}</dt>
+          <dd>{{ devices().length }}</dd>
+        </div>
+        @if (isAdmin()) {
           <div class="stat">
-            <dt>{{ 'console.overview.devicesOnline' | t }}</dt>
-            <dd>{{ onlineCount() }}</dd>
+            <dt>{{ 'console.overview.users' | t }}</dt>
+            <dd>{{ userCount() }}</dd>
           </div>
+          <!-- A word rather than a figure, but the same label-over-value box as the other three. -->
           <div class="stat">
-            <dt>{{ 'console.overview.devicesTotal' | t }}</dt>
-            <dd>{{ devices().length }}</dd>
+            <dt>{{ 'console.overview.upstream' | t }}</dt>
+            <dd class="stat-word">
+              <span class="status" [attr.data-tone]="upstreamTone()">{{ upstreamLabel() }}</span>
+            </dd>
           </div>
-          @if (isAdmin()) {
-            <div class="stat">
-              <dt>{{ 'console.overview.users' | t }}</dt>
-              <dd>{{ userCount() }}</dd>
-            </div>
-            <div class="stat">
-              <dt>{{ 'console.overview.upstream' | t }}</dt>
-              <dd>
-                <span class="status" [attr.data-tone]="upstreamTone()">{{ upstreamLabel() }}</span>
-              </dd>
-            </div>
-          }
-        </dl>
-      </div>
+        }
+      </dl>
 
       <div class="card">
-        <h2>{{ 'console.overview.myDevices' | t }}</h2>
+        <div class="card-head">
+          <h2>{{ 'console.overview.myDevices' | t }}</h2>
+          @if (devices().length > 0) {
+            <a class="btn btn-link" routerLink="/devices">{{ 'console.overview.viewAll' | t }}</a>
+          }
+        </div>
         @if (devices().length === 0) {
           <console-state-block
             state="empty"
@@ -80,15 +95,17 @@ const UPSTREAM_STATE_KEYS: Readonly<Record<UpstreamView['state'], string>> = {
           />
         } @else {
           <console-device-table [devices]="devices()" [detailed]="isAdmin()" />
-          <div class="form-actions">
-            <a class="btn" routerLink="/devices">{{ 'console.overview.viewAll' | t }}</a>
-          </div>
         }
       </div>
 
       @if (isAdmin()) {
         <div class="card">
-          <h2>{{ 'console.overview.recentAudit' | t }}</h2>
+          <div class="card-head">
+            <h2>{{ 'console.overview.recentAudit' | t }}</h2>
+            @if (recentAudit().length > 0) {
+              <a class="btn btn-link" routerLink="/audit">{{ 'console.overview.viewAll' | t }}</a>
+            }
+          </div>
           @if (recentAudit().length === 0) {
             <console-state-block
               state="empty"
@@ -96,29 +113,7 @@ const UPSTREAM_STATE_KEYS: Readonly<Record<UpstreamView['state'], string>> = {
               [emptyHelp]="'console.audit.emptyHelp' | t"
             />
           } @else {
-            <div class="table-scroll">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th>{{ 'console.audit.time' | t }}</th>
-                    <th>{{ 'console.audit.action' | t }}</th>
-                    <th>{{ 'console.audit.target' | t }}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  @for (event of recentAudit(); track event.id) {
-                    <tr>
-                      <td>{{ moment(event.at) }}</td>
-                      <td class="cell-name">{{ event.action }}</td>
-                      <td class="cell-mono">{{ text(event.targetId) }}</td>
-                    </tr>
-                  }
-                </tbody>
-              </table>
-            </div>
-            <div class="form-actions">
-              <a class="btn" routerLink="/audit">{{ 'console.overview.viewAll' | t }}</a>
-            </div>
+            <console-audit-table [events]="recentAudit()" [directory]="directory()" />
           }
         </div>
       }
@@ -136,9 +131,10 @@ export class OverviewPageComponent {
   protected readonly recentAudit = signal<AuditView[]>([]);
   protected readonly loading = signal(true);
   protected readonly error = signal('');
+  /** Names for the identifiers the recent events point at. */
+  protected readonly directory = signal<NameDirectory>(EMPTY_NAME_DIRECTORY);
 
   protected readonly isAdmin = this.session.isAdmin;
-  protected readonly text = formatText;
 
   protected readonly state = computed<PageState>(() => {
     if (this.loading()) return 'loading';
@@ -176,10 +172,6 @@ export class OverviewPageComponent {
     void this.load();
   }
 
-  protected moment(value: number): string {
-    return formatMoment(value, this.i18n.locale());
-  }
-
   private async load(): Promise<void> {
     this.loading.set(true);
     this.error.set('');
@@ -206,6 +198,7 @@ export class OverviewPageComponent {
     this.userCount.set(users.length);
     this.upstream.set(topology.upstream);
     this.recentAudit.set(audit);
+    this.directory.set(buildNameDirectory(users, devices));
   }
 
   private async loadForUser(): Promise<void> {

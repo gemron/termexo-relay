@@ -1,11 +1,9 @@
 import { Component, computed, inject, signal } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 
 import { ConsoleApiService } from '../core/console-api.service';
 import { describeConsoleError } from '../core/console-error';
 import { registerRelayConsoleTranslations } from '../core/console.i18n';
 import type {
-  DeviceKind,
   EnrollmentStatus,
   EnrollmentView,
   NewEnrollment,
@@ -15,16 +13,13 @@ import { ToastService } from '../core/toast.service';
 import { ConfirmBlockComponent } from '../shared/confirm-block';
 import { CopyButtonComponent } from '../shared/copy-button';
 import { formatMoment, formatText } from '../shared/format';
+import { buildNameDirectory, shortId } from '../shared/name-directory';
 import { PageState, StateBlockComponent } from '../shared/state-block';
 import { I18nService, TranslatePipe } from '../shared/workspace-ui';
+import { EnrollmentDrawerComponent } from './enrollment-drawer';
 
 // Registered at module scope so the wording is in place before the component is built.
 registerRelayConsoleTranslations();
-
-const DEFAULT_TTL_MINUTES = 15;
-const MIN_TTL_MINUTES = 1;
-/** The relay's own ceiling: a code that outlives a day is a password with extra steps. */
-const MAX_TTL_MINUTES = 1440;
 
 const STATUS_LABEL_KEYS: Readonly<Record<EnrollmentStatus, string>> = {
   pending: 'console.enrollments.statusPending',
@@ -45,7 +40,7 @@ const STATUS_TONES: Readonly<Record<EnrollmentStatus, string>> = {
   imports: [
     ConfirmBlockComponent,
     CopyButtonComponent,
-    FormsModule,
+    EnrollmentDrawerComponent,
     StateBlockComponent,
     TranslatePipe,
   ],
@@ -59,97 +54,23 @@ const STATUS_TONES: Readonly<Record<EnrollmentStatus, string>> = {
         <button type="button" class="btn" [disabled]="loading()" (click)="reload()">
           {{ 'console.common.refresh' | t }}
         </button>
+        <button type="button" class="btn btn-primary" (click)="openDrawer()">
+          {{ 'console.enrollments.issue' | t }}
+        </button>
       </div>
     </header>
 
-    <div class="card">
-      <h2>{{ 'console.enrollments.issue' | t }}</h2>
-
-      @if (formError()) {
-        <div class="alert error" role="alert">{{ formError() }}</div>
-      }
-
-      <form (ngSubmit)="issue()">
-        <div class="field-row">
-          <label class="field">
-            <span>{{ 'console.enrollments.kind' | t }}</span>
-            <select
-              [disabled]="issuing()"
-              [ngModel]="kind()"
-              (ngModelChange)="kind.set($event)"
-              name="kind"
-            >
-              <option value="desktop">{{ 'console.devices.kindDesktop' | t }}</option>
-              <option value="relay">{{ 'console.devices.kindRelay' | t }}</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>{{ 'console.enrollments.owner' | t }}</span>
-            <select
-              name="owner"
-              [disabled]="issuing()"
-              [ngModel]="ownerUserId()"
-              (ngModelChange)="ownerUserId.set($event)"
-            >
-              <option value="">{{ 'console.enrollments.ownerNone' | t }}</option>
-              @for (user of users(); track user.id) {
-                <option [value]="user.id">{{ user.username }}</option>
-              }
-            </select>
-          </label>
-          <label class="field">
-            <span>{{ 'console.enrollments.ttl' | t }}</span>
-            <input
-              name="ttl"
-              type="number"
-              inputmode="numeric"
-              [min]="minTtl"
-              [max]="maxTtl"
-              [disabled]="issuing()"
-              [attr.aria-invalid]="ttlInvalid() ? 'true' : null"
-              [ngModel]="ttlMinutes()"
-              (ngModelChange)="ttlMinutes.set($event)"
-            />
-            @if (ttlInvalid()) {
-              <small class="field-error" role="alert">
-                {{ 'console.enrollments.ttlInvalid' | t }}
-              </small>
-            } @else {
-              <small>{{ 'console.enrollments.ttlHint' | t }}</small>
-            }
-          </label>
-          <label class="field">
-            <span>{{ 'console.enrollments.note' | t }}</span>
-            <input
-              name="note"
-              type="text"
-              [placeholder]="'console.enrollments.notePlaceholder' | t"
-              [disabled]="issuing()"
-              [ngModel]="note()"
-              (ngModelChange)="note.set($event)"
-            />
-          </label>
+    @if (issuedCode(); as code) {
+      <!-- The relay never stores the code in the clear, so this is the only chance to read it. -->
+      <div class="code-reveal" role="status">
+        <strong>{{ 'console.enrollments.codeTitle' | t }}</strong>
+        <div class="code-value">
+          <code>{{ code }}</code>
+          <console-copy-button buttonClass="btn btn-primary" [value]="code" />
         </div>
-
-        <div class="form-actions">
-          <button type="submit" class="btn btn-primary" [disabled]="!canIssue()">
-            {{ (issuing() ? 'console.enrollments.issuing' : 'console.enrollments.issue') | t }}
-          </button>
-        </div>
-      </form>
-
-      @if (issuedCode(); as code) {
-        <!-- The relay never stores the code in the clear, so this is the only chance to read it. -->
-        <div class="code-reveal" role="status">
-          <strong>{{ 'console.enrollments.codeTitle' | t }}</strong>
-          <div class="code-value">
-            <code>{{ code }}</code>
-            <console-copy-button buttonClass="btn btn-primary" [value]="code" />
-          </div>
-          <small>{{ 'console.enrollments.codeHint' | t }}</small>
-        </div>
-      }
-    </div>
+        <small>{{ 'console.enrollments.codeHint' | t }}</small>
+      </div>
+    }
 
     @if (state() === 'ready') {
       <div class="card">
@@ -178,15 +99,16 @@ const STATUS_TONES: Readonly<Record<EnrollmentStatus, string>> = {
                   <td>{{ kindLabel(enrollment) }}</td>
                   <td>{{ text(enrollment.ownerUsername) }}</td>
                   <td>{{ text(enrollment.note) }}</td>
-                  <td>{{ enrollment.createdBy }}</td>
+                  <td [title]="enrollment.createdBy">{{ issuer(enrollment) }}</td>
                   <td>{{ moment(enrollment.expiresAt) }}</td>
                   <td>{{ moment(enrollment.usedAt) }}</td>
                   <td>
                     <div class="cell-actions">
                       @if (enrollment.status === 'pending') {
+                        <!-- Neutral here; the confirmation below carries the danger styling. -->
                         <button
                           type="button"
-                          class="btn btn-link danger"
+                          class="btn btn-link"
                           [disabled]="acting()"
                           (click)="cancelling.set(enrollment.id)"
                         >
@@ -220,7 +142,19 @@ const STATUS_TONES: Readonly<Record<EnrollmentStatus, string>> = {
         [error]="error()"
         [emptyTitle]="'console.enrollments.empty' | t"
         [emptyHelp]="'console.enrollments.emptyHelp' | t"
+        [actionLabel]="'console.enrollments.issue' | t"
         (retry)="reload()"
+        (action)="openDrawer()"
+      />
+    }
+
+    @if (drawerOpen()) {
+      <console-enrollment-drawer
+        [users]="users()"
+        [busy]="issuing()"
+        [error]="formError()"
+        (closed)="closeDrawer()"
+        (submitted)="issue($event)"
       />
     }
   `,
@@ -230,8 +164,6 @@ export class EnrollmentsPageComponent {
   private readonly toasts = inject(ToastService);
   private readonly i18n = inject(I18nService);
 
-  protected readonly minTtl = MIN_TTL_MINUTES;
-  protected readonly maxTtl = MAX_TTL_MINUTES;
   protected readonly text = formatText;
 
   protected readonly enrollments = signal<EnrollmentView[]>([]);
@@ -243,11 +175,7 @@ export class EnrollmentsPageComponent {
   protected readonly formError = signal('');
   protected readonly issuedCode = signal('');
   protected readonly cancelling = signal<string | null>(null);
-
-  protected readonly kind = signal<DeviceKind>('desktop');
-  protected readonly ownerUserId = signal('');
-  protected readonly ttlMinutes = signal<number | null>(DEFAULT_TTL_MINUTES);
-  protected readonly note = signal('');
+  protected readonly drawerOpen = signal(false);
 
   protected readonly state = computed<PageState>(() => {
     if (this.loading()) return 'loading';
@@ -255,17 +183,8 @@ export class EnrollmentsPageComponent {
     return this.enrollments().length === 0 ? 'empty' : 'ready';
   });
 
-  protected readonly ttlInvalid = computed(() => {
-    const value = this.ttlMinutes();
-    return (
-      value === null ||
-      !Number.isInteger(value) ||
-      value < MIN_TTL_MINUTES ||
-      value > MAX_TTL_MINUTES
-    );
-  });
-
-  protected readonly canIssue = computed(() => !this.issuing() && !this.ttlInvalid());
+  /** Who issued a code is stored as a user id; the operator knows them by their name. */
+  private readonly issuers = computed(() => buildNameDirectory(this.users(), []));
 
   constructor() {
     void this.load();
@@ -293,8 +212,23 @@ export class EnrollmentsPageComponent {
     );
   }
 
-  protected async issue(): Promise<void> {
-    if (!this.canIssue()) {
+  /** A deleted account leaves its id behind; a short one still tells two issuers apart. */
+  protected issuer(enrollment: EnrollmentView): string {
+    return this.issuers().get(enrollment.createdBy) ?? shortId(enrollment.createdBy);
+  }
+
+  protected openDrawer(): void {
+    this.formError.set('');
+    this.drawerOpen.set(true);
+  }
+
+  protected closeDrawer(): void {
+    this.drawerOpen.set(false);
+    this.formError.set('');
+  }
+
+  protected async issue(request: NewEnrollment): Promise<void> {
+    if (this.issuing()) {
       return;
     }
     this.issuing.set(true);
@@ -302,9 +236,10 @@ export class EnrollmentsPageComponent {
     // The previous code is gone the moment a new one is issued; leaving it would be misleading.
     this.issuedCode.set('');
     try {
-      const created = await this.api.createEnrollment(this.buildRequest());
+      const created = await this.api.createEnrollment(request);
       this.issuedCode.set(created.code);
-      this.note.set('');
+      // The code has to be read before anything else, so the drawer gets out of its way.
+      this.drawerOpen.set(false);
       this.toasts.success(this.i18n.t('console.enrollments.created'));
       await this.load();
     } catch (error) {
@@ -333,20 +268,6 @@ export class EnrollmentsPageComponent {
     } finally {
       this.acting.set(false);
     }
-  }
-
-  private buildRequest(): NewEnrollment {
-    const request: NewEnrollment = {
-      kind: this.kind(),
-      ttlMinutes: this.ttlMinutes() ?? DEFAULT_TTL_MINUTES,
-    };
-    if (this.ownerUserId()) {
-      request.ownerUserId = this.ownerUserId();
-    }
-    if (this.note().trim()) {
-      request.note = this.note().trim();
-    }
-    return request;
   }
 
   private async load(): Promise<void> {
