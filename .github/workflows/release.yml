@@ -147,7 +147,7 @@ jobs:
           staging="termexo-relay-${VERSION}-${TARGET}"
           mkdir -p "dist/${staging}"
           cp "target/${TARGET}/release/termexo-relay" "dist/${staging}/"
-          cp README.md "dist/${staging}/"
+          cp README.md README.cn.md "dist/${staging}/"
           tar -C dist -czf "dist/${staging}.tar.gz" "${staging}"
 
       # Git for Windows ships no `zip`, so the archive is made with Compress-Archive. Passing the
@@ -162,7 +162,7 @@ jobs:
           $staging = "termexo-relay-${env:VERSION}-${env:TARGET}"
           New-Item -ItemType Directory -Force -Path "dist/$staging" | Out-Null
           Copy-Item "target/${env:TARGET}/release/termexo-relay.exe" "dist/$staging/"
-          Copy-Item README.md "dist/$staging/"
+          Copy-Item README.md, README.cn.md "dist/$staging/"
           Compress-Archive -Path "dist/$staging" -DestinationPath "dist/$staging.zip"
 
       - uses: actions/upload-artifact@v7.0.1
