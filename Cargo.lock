@@ -2141,7 +2141,7 @@ dependencies = [
 
 [[package]]
 name = "termexo-relay"
-version = "0.10.1"
+version = "0.10.2"
 dependencies = [
  "argon2",
  "axum",
