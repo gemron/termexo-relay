@@ -14,7 +14,7 @@ use std::task::{Context, Poll};
 use axum::body::Body;
 use axum::extract::Request;
 use axum::http::{
-    header, HeaderMap, HeaderName, HeaderValue, Response as HttpResponse, StatusCode, Uri,
+    header, HeaderMap, HeaderName, HeaderValue, Response as HttpResponse, StatusCode, Uri, Version,
 };
 use axum::response::{IntoResponse, Response};
 use http_body_util::Limited;
@@ -41,6 +41,12 @@ use crate::tunnel::{TunnelError, TunnelStream};
 /// reads the device id back out of it, which is also what makes hyper's connection pool group
 /// keep-alive connections per device for free.
 const TUNNEL_AUTHORITY_SUFFIX: &str = ".termexo-tunnel";
+
+/// What every tunnel stream speaks, whatever the browser used to reach the relay.
+const TUNNEL_HTTP_VERSION: Version = Version::HTTP_11;
+
+/// The answer when the device is connected but an exchange with it failed.
+const FORWARD_FAILED: &str = "设备连接失败。";
 
 /// Largest request body the relay carries. The workbench only receives data on its WebSocket, so
 /// anything larger is a mistake rather than a use case.
@@ -144,6 +150,10 @@ pub async fn forward(
     let websocket = is_websocket_upgrade(&parts.headers);
     prepare_request_headers(&mut parts.headers, client, &base, websocket);
     parts.uri = uri;
+    // A browser on a TLS relay talks HTTP/2, and the request keeps that version when it is taken
+    // apart. The pooled client refuses to send an HTTP/2 request over the HTTP/1.1 connection a
+    // stream is, so the hop into the tunnel has to be relabelled.
+    parts.version = TUNNEL_HTTP_VERSION;
 
     if websocket {
         return bridge_websocket(&state.proxy, parts, body).await;
@@ -151,9 +161,16 @@ pub async fn forward(
     let outbound = hyper::Request::from_parts(parts, Limited::new(body, MAX_REQUEST_BODY_BYTES));
     match state.proxy.client.request(outbound).await {
         Ok(response) => relay_response(response.map(Body::new)),
+        // The device dropped between the online check above and the stream being opened.
+        Err(error) if error.is_connect() => {
+            tracing::debug!(device = %device_id, %error, "无法为请求打开隧道流");
+            unreachable_page(state, device_id, device)
+        }
+        // The device is there and the exchange itself failed: calling that "offline" would send
+        // the user to check a computer that is running fine.
         Err(error) => {
-            tracing::debug!(device = %device_id, %error, "转发到设备失败");
-            offline_page(device_id, None)
+            tracing::warn!(device = %device_id, %error, "转发到设备失败");
+            (StatusCode::BAD_GATEWAY, FORWARD_FAILED).into_response()
         }
     }
 }
@@ -410,7 +427,7 @@ fn internal_error(error: &impl std::fmt::Display) -> Response {
 
 fn bad_gateway(error: &impl std::fmt::Display) -> Response {
     tracing::debug!(%error, "设备连接失败");
-    (StatusCode::BAD_GATEWAY, "设备连接失败。").into_response()
+    (StatusCode::BAD_GATEWAY, FORWARD_FAILED).into_response()
 }
 
 fn unknown_device_page() -> Response {

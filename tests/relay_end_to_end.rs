@@ -38,6 +38,32 @@ async fn connected_device(relay: &TestRelay) -> (FakeDevice, String) {
     (connected.device, connected.device_id)
 }
 
+/// A relay serving TLS is reached over HTTP/2, while every tunnel stream is HTTP/1.1. Prior
+/// knowledge over plain HTTP puts the same HTTP/2 request in front of the proxy without a
+/// certificate in the test.
+#[tokio::test]
+async fn a_browser_on_http2_reaches_its_device_through_the_relay() {
+    let relay = TestRelay::start().await;
+    let (_device, device_id) = connected_device(&relay).await;
+    let client = reqwest::Client::builder()
+        .http2_prior_knowledge()
+        .build()
+        .expect("the client should build");
+
+    let response = client
+        .get(format!("{}/d/{device_id}/hello", relay.origin()))
+        .send()
+        .await
+        .expect("the request should reach the relay");
+
+    assert_eq!(response.version(), reqwest::Version::HTTP_2);
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response.text().await.expect("a body"),
+        format!("设备已应答 base=/d/{device_id}/")
+    );
+}
+
 #[tokio::test]
 async fn a_browser_reaches_its_device_through_the_relay() {
     let relay = TestRelay::start().await;
