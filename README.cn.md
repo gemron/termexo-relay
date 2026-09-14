@@ -473,6 +473,12 @@ termexo-relay serve \
 
 ```nginx
 server {
+    listen 80;
+    server_name relay.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
     listen 443 ssl http2;
     server_name relay.example.com;
 
@@ -1048,6 +1054,16 @@ curl -s https://relay.example.com/api/health
 # 管理员：中继 id、公开地址与版本
 curl -b cookies.txt "$RELAY/api/admin/settings"
 ```
+
+放在反向代理后面时，部署完成以及每次改动代理配置后，还要用明文 HTTP 地址访问一次：
+
+```bash
+curl -sI http://relay.example.com/api/health
+# 应返回 3xx 跳转，Location 指向 https://relay.example.com/api/health
+```
+
+80 端口的请求到不了中继。代理的跳转一旦失效，不带 `https://` 输入地址的人只会看到代理返回的 404 或连接被拒，
+而通过 HTTPS 访问 `/api/health`、查看中继日志都发现不了。
 
 ### 升级与备份
 

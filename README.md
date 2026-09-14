@@ -500,6 +500,12 @@ termexo-relay serve \
 
 ```nginx
 server {
+    listen 80;
+    server_name relay.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
     listen 443 ssl http2;
     server_name relay.example.com;
 
@@ -1094,6 +1100,18 @@ check from outside the container.
 # As an administrator: the relay id, its public URL and version
 curl -b cookies.txt "$RELAY/api/admin/settings"
 ```
+
+Behind a reverse proxy, also open the plain HTTP address once after deploying and after every change to
+the proxy configuration:
+
+```bash
+curl -sI http://relay.example.com/api/health
+# expect a 3xx redirect with Location: https://relay.example.com/api/health
+```
+
+Requests on port 80 never reach the relay. If the proxy loses its redirect, anyone typing the address
+without `https://` gets the proxy's 404 or a refused connection, and neither `/api/health` over HTTPS nor
+the relay's logs will show it.
 
 ### Upgrading and backing up
 
